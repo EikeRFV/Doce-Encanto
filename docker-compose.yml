@@ -1,0 +1,40 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: doce_encanto_postgres
+    environment:
+      POSTGRES_USER: root
+      POSTGRES_PASSWORD: rootpassword
+      POSTGRES_DB: doce_encanto
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - doce_encanto_network
+
+  redis:
+    image: redis:7-alpine
+    container_name: doce_encanto_redis
+    ports:
+      - '6379:6379'
+    networks:
+      - doce_encanto_network
+
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: doce_encanto_rabbitmq
+    ports:
+      - '5672:5672'
+      - '15672:15672'
+    networks:
+      - doce_encanto_network
+
+volumes:
+  postgres_data:
+
+networks:
+  doce_encanto_network:
+    driver: bridge
