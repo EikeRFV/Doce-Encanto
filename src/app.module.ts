@@ -1,6 +1,6 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
-import { TypeOrmModule } from '@nestjs/typeorm';
+import { SequelizeModule } from '@nestjs/sequelize';
 import { CacheModule } from '@nestjs/cache-manager';
 import { BullModule } from '@nestjs/bullmq';
 import { CqrsModule } from '@nestjs/cqrs';
@@ -16,6 +16,7 @@ import { CategoriesModule } from './modules/categories/categories.module';
 import { OrdersModule } from './modules/orders/orders.module';
 import { AddressesModule } from './modules/addresses/addresses.module';
 import { ReviewsModule } from './modules/reviews/reviews.module';
+import { getDatabaseConfig } from './config/database.config';
 
 @Module({
   imports: [
@@ -23,19 +24,9 @@ import { ReviewsModule } from './modules/reviews/reviews.module';
       isGlobal: true,
       envFilePath: '.env',
     }),
-    TypeOrmModule.forRootAsync({
+    SequelizeModule.forRootAsync({
       imports: [ConfigModule],
-      useFactory: (configService: ConfigService) => ({
-        type: 'postgres',
-        host: configService.get('DATABASE_HOST'),
-        port: configService.get('DATABASE_PORT'),
-        username: configService.get('DATABASE_USER'),
-        password: configService.get('DATABASE_PASSWORD'),
-        database: configService.get('DATABASE_NAME'),
-        entities: [__dirname + '/**/*.entity{.ts,.js}'],
-        synchronize: false,
-        logging: configService.get('NODE_ENV') === 'development',
-      }),
+      useFactory: getDatabaseConfig,
       inject: [ConfigService],
     }),
     CacheModule.registerAsync({

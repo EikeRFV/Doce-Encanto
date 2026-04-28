@@ -1,14 +1,13 @@
 import { Module } from '@nestjs/common';
-import { TypeOrmModule } from '@nestjs/typeorm';
+import { SequelizeModule } from '@nestjs/sequelize';
 import { ProductsService } from './products.service';
 import { ProductsController } from './products.controller';
-import { Product } from './entities/product.entity';
-import { ProductImage } from './entities/product-image.entity';
-import { ProductStockHistory } from './entities/product-stock-history.entity';
+import { Product } from './models/product.model';
+import { ProductImage } from './models/product-image.model';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Product, ProductImage, ProductStockHistory]),
+    SequelizeModule.forFeature([Product, ProductImage]),
   ],
   controllers: [ProductsController],
   providers: [ProductsService],
