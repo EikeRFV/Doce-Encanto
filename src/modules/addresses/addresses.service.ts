@@ -1,15 +1,14 @@
 import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
-import { Address } from './entities/address.entity';
+import { InjectModel } from '@nestjs/sequelize';
+import { Address } from './models/address.model';
 import { CreateAddressDto } from './dto/create-address.dto';
 import { UpdateAddressDto } from './dto/update-address.dto';
 
 @Injectable()
 export class AddressesService {
   constructor(
-    @InjectRepository(Address)
-    private readonly addressRepository: Repository<Address>,
+    @InjectModel(Address)
+    private readonly addressModel: typeof Address,
   ) {}
 
   async create(userId: string, createAddressDto: CreateAddressDto): Promise<Address> {
@@ -18,7 +17,7 @@ export class AddressesService {
     if (isDefault) {
       await this.removeDefaultFromAll(userId);
     } else {
-      const hasDefault = await this.addressRepository.findOne({
+      const hasDefault = await this.addressModel.findOne({
         where: { userId, isDefault: true },
       });
 
@@ -27,24 +26,22 @@ export class AddressesService {
       }
     }
 
-    const address = this.addressRepository.create({
+    return await this.addressModel.create({
       ...addressData,
       userId,
       isDefault: createAddressDto.isDefault || false,
     });
-
-    return await this.addressRepository.save(address);
   }
 
   async findAll(userId: string): Promise<Address[]> {
-    return await this.addressRepository.find({
+    return await this.addressModel.findAll({
       where: { userId },
-      order: { isDefault: 'DESC', createdAt: 'DESC' },
+      order: [['isDefault', 'DESC'], ['createdAt', 'DESC']],
     });
   }
 
   async findOne(id: string, userId: string): Promise<Address> {
-    const address = await this.addressRepository.findOne({
+    const address = await this.addressModel.findOne({
       where: { id, userId },
     });
 
@@ -56,7 +53,7 @@ export class AddressesService {
   }
 
   async findDefault(userId: string): Promise<Address | null> {
-    return await this.addressRepository.findOne({
+    return await this.addressModel.findOne({
       where: { userId, isDefault: true },
     });
   }
@@ -68,9 +65,11 @@ export class AddressesService {
       await this.removeDefaultFromAll(userId);
     }
 
-    Object.assign(address, updateAddressDto);
+    await address.update(updateAddressDto);
 
-    return await this.addressRepository.save(address);
+    return await this.addressModel.findOne({
+      where: { id, userId },
+    });
   }
 
   async setAsDefault(id: string, userId: string): Promise<Address> {
@@ -78,36 +77,37 @@ export class AddressesService {
 
     await this.removeDefaultFromAll(userId);
 
-    address.isDefault = true;
+    await address.update({ isDefault: true });
 
-    return await this.addressRepository.save(address);
+    return await this.addressModel.findOne({
+      where: { id, userId },
+    });
   }
 
   async remove(id: string, userId: string): Promise<void> {
     const address = await this.findOne(id, userId);
 
     if (address.isDefault) {
-      const otherAddresses = await this.addressRepository.find({
+      const otherAddresses = await this.addressModel.findAll({
         where: { userId },
-        order: { createdAt: 'DESC' },
+        order: [['createdAt', 'DESC']],
       });
 
       if (otherAddresses.length > 1) {
         const newDefault = otherAddresses.find((addr) => addr.id !== id);
         if (newDefault) {
-          newDefault.isDefault = true;
-          await this.addressRepository.save(newDefault);
+          await newDefault.update({ isDefault: true });
         }
       }
     }
 
-    await this.addressRepository.remove(address);
+    await address.destroy();
   }
 
   private async removeDefaultFromAll(userId: string): Promise<void> {
-    await this.addressRepository.update(
-      { userId, isDefault: true },
+    await this.addressModel.update(
       { isDefault: false },
+      { where: { userId, isDefault: true } },
     );
   }
 }

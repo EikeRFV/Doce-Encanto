@@ -4,14 +4,15 @@ import {
   BadRequestException,
   InternalServerErrorException,
 } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, Between, DataSource } from 'typeorm';
-import { UserWallet } from './entities/user-wallet.entity';
+import { InjectModel } from '@nestjs/sequelize';
+import { Op } from 'sequelize';
+import { Sequelize } from 'sequelize-typescript';
+import { UserWallet } from './models/user-wallet.model';
 import {
   WalletTransaction,
   TransactionType,
   TransactionStatus,
-} from './entities/wallet-transaction.entity';
+} from './models/wallet-transaction.model';
 import { AddCreditsDto } from './dto/add-credits.dto';
 import { UseCreditsDto } from './dto/use-credits.dto';
 import { QueryTransactionsDto } from './dto/query-transactions.dto';
@@ -19,11 +20,11 @@ import { QueryTransactionsDto } from './dto/query-transactions.dto';
 @Injectable()
 export class WalletsService {
   constructor(
-    @InjectRepository(UserWallet)
-    private readonly walletRepository: Repository<UserWallet>,
-    @InjectRepository(WalletTransaction)
-    private readonly transactionRepository: Repository<WalletTransaction>,
-    private readonly dataSource: DataSource,
+    @InjectModel(UserWallet)
+    private readonly walletModel: typeof UserWallet,
+    @InjectModel(WalletTransaction)
+    private readonly transactionModel: typeof WalletTransaction,
+    private readonly sequelize: Sequelize,
   ) {}
 
   /**
@@ -31,7 +32,7 @@ export class WalletsService {
    * Ao criar um usuário, uma carteira é automaticamente criada com saldo zero
    */
   async createWallet(userId: string): Promise<UserWallet> {
-    const existingWallet = await this.walletRepository.findOne({
+    const existingWallet = await this.walletModel.findOne({
       where: { userId },
     });
 
@@ -39,12 +40,12 @@ export class WalletsService {
       throw new BadRequestException('Usuário já possui uma carteira');
     }
 
-    const wallet = this.walletRepository.create({
+    return await this.walletModel.create({
       userId,
       balance: 0,
+      totalEarned: 0,
+      totalSpent: 0,
     });
-
-    return await this.walletRepository.save(wallet);
   }
 
   /**
@@ -52,7 +53,7 @@ export class WalletsService {
    * Retorna o saldo atual da carteira do usuário
    */
   async getBalance(userId: string): Promise<UserWallet> {
-    const wallet = await this.walletRepository.findOne({
+    const wallet = await this.walletModel.findOne({
       where: { userId },
     });
 
@@ -86,22 +87,26 @@ export class WalletsService {
       );
     }
 
-    const queryRunner = this.dataSource.createQueryRunner();
-    await queryRunner.connect();
-    await queryRunner.startTransaction();
+    const transaction = await this.sequelize.transaction();
 
     try {
       // Busca ou cria carteira
-      let wallet = await queryRunner.manager.findOne(UserWallet, {
+      let wallet = await this.walletModel.findOne({
         where: { userId },
+        transaction,
+        lock: true,
       });
 
       if (!wallet) {
-        wallet = queryRunner.manager.create(UserWallet, {
-          userId,
-          balance: 0,
-        });
-        await queryRunner.manager.save(wallet);
+        wallet = await this.walletModel.create(
+          {
+            userId,
+            balance: 0,
+            totalEarned: 0,
+            totalSpent: 0,
+          },
+          { transaction },
+        );
       }
 
       const previousBalance = wallet.balance;
@@ -109,30 +114,30 @@ export class WalletsService {
 
       // Atualiza saldo
       wallet.balance = newBalance;
-      await queryRunner.manager.save(wallet);
+      wallet.totalEarned = wallet.totalEarned + amount;
+      await wallet.save({ transaction });
 
       // Cria transação
-      const transaction = queryRunner.manager.create(WalletTransaction, {
-        walletId: wallet.id,
-        type: TransactionType.CREDIT,
-        amount,
-        previousBalance,
-        newBalance,
-        description: description || 'Recarga de créditos',
-        status: TransactionStatus.COMPLETED,
-      });
+      const walletTransaction = await this.transactionModel.create(
+        {
+          walletId: wallet.id,
+          type: TransactionType.CREDIT,
+          amount,
+          previousBalance,
+          newBalance,
+          description: description || 'Recarga de créditos',
+          status: TransactionStatus.COMPLETED,
+        },
+        { transaction },
+      );
 
-      await queryRunner.manager.save(transaction);
-      await queryRunner.commitTransaction();
-
-      return transaction;
+      await transaction.commit();
+      return walletTransaction;
     } catch (error) {
-      await queryRunner.rollbackTransaction();
+      await transaction.rollback();
       throw new InternalServerErrorException(
         'Erro ao adicionar créditos: ' + error.message,
       );
-    } finally {
-      await queryRunner.release();
     }
   }
 
@@ -152,13 +157,13 @@ export class WalletsService {
       throw new BadRequestException('Valor mínimo para uso é R$ 0,01');
     }
 
-    const queryRunner = this.dataSource.createQueryRunner();
-    await queryRunner.connect();
-    await queryRunner.startTransaction();
+    const transaction = await this.sequelize.transaction();
 
     try {
-      const wallet = await queryRunner.manager.findOne(UserWallet, {
+      const wallet = await this.walletModel.findOne({
         where: { userId },
+        transaction,
+        lock: true,
       });
 
       if (!wallet) {
@@ -177,26 +182,28 @@ export class WalletsService {
 
       // Atualiza saldo
       wallet.balance = newBalance;
-      await queryRunner.manager.save(wallet);
+      wallet.totalSpent = wallet.totalSpent + amount;
+      await wallet.save({ transaction });
 
       // Cria transação
-      const transaction = queryRunner.manager.create(WalletTransaction, {
-        walletId: wallet.id,
-        type: TransactionType.DEBIT,
-        amount,
-        previousBalance,
-        newBalance,
-        orderId,
-        description: description || 'Uso de créditos',
-        status: TransactionStatus.COMPLETED,
-      });
+      const walletTransaction = await this.transactionModel.create(
+        {
+          walletId: wallet.id,
+          type: TransactionType.DEBIT,
+          amount,
+          previousBalance,
+          newBalance,
+          orderId,
+          description: description || 'Uso de créditos',
+          status: TransactionStatus.COMPLETED,
+        },
+        { transaction },
+      );
 
-      await queryRunner.manager.save(transaction);
-      await queryRunner.commitTransaction();
-
-      return transaction;
+      await transaction.commit();
+      return walletTransaction;
     } catch (error) {
-      await queryRunner.rollbackTransaction();
+      await transaction.rollback();
       if (
         error instanceof NotFoundException ||
         error instanceof BadRequestException
@@ -206,8 +213,6 @@ export class WalletsService {
       throw new InternalServerErrorException(
         'Erro ao usar créditos: ' + error.message,
       );
-    } finally {
-      await queryRunner.release();
     }
   }
 
@@ -220,25 +225,23 @@ export class WalletsService {
     transactionId: string,
     reason: string,
   ): Promise<WalletTransaction> {
-    const queryRunner = this.dataSource.createQueryRunner();
-    await queryRunner.connect();
-    await queryRunner.startTransaction();
+    const transaction = await this.sequelize.transaction();
 
     try {
-      const wallet = await queryRunner.manager.findOne(UserWallet, {
+      const wallet = await this.walletModel.findOne({
         where: { userId },
+        transaction,
+        lock: true,
       });
 
       if (!wallet) {
         throw new NotFoundException('Carteira não encontrada');
       }
 
-      const originalTransaction = await queryRunner.manager.findOne(
-        WalletTransaction,
-        {
-          where: { id: transactionId, walletId: wallet.id },
-        },
-      );
+      const originalTransaction = await this.transactionModel.findOne({
+        where: { id: transactionId, walletId: wallet.id },
+        transaction,
+      });
 
       if (!originalTransaction) {
         throw new NotFoundException('Transação não encontrada');
@@ -259,30 +262,32 @@ export class WalletsService {
 
       // Atualiza saldo
       wallet.balance = newBalance;
-      await queryRunner.manager.save(wallet);
+      wallet.totalEarned = wallet.totalEarned + originalTransaction.amount;
+      await wallet.save({ transaction });
 
       // Marca transação original como estornada
       originalTransaction.status = TransactionStatus.REFUNDED;
-      await queryRunner.manager.save(originalTransaction);
+      await originalTransaction.save({ transaction });
 
       // Cria transação de estorno
-      const refundTransaction = queryRunner.manager.create(WalletTransaction, {
-        walletId: wallet.id,
-        type: TransactionType.REFUND,
-        amount: originalTransaction.amount,
-        previousBalance,
-        newBalance,
-        orderId: originalTransaction.orderId,
-        description: `Estorno: ${reason}`,
-        status: TransactionStatus.COMPLETED,
-      });
+      const refundTransaction = await this.transactionModel.create(
+        {
+          walletId: wallet.id,
+          type: TransactionType.REFUND,
+          amount: originalTransaction.amount,
+          previousBalance,
+          newBalance,
+          orderId: originalTransaction.orderId,
+          description: `Estorno: ${reason}`,
+          status: TransactionStatus.COMPLETED,
+        },
+        { transaction },
+      );
 
-      await queryRunner.manager.save(refundTransaction);
-      await queryRunner.commitTransaction();
-
+      await transaction.commit();
       return refundTransaction;
     } catch (error) {
-      await queryRunner.rollbackTransaction();
+      await transaction.rollback();
       if (
         error instanceof NotFoundException ||
         error instanceof BadRequestException
@@ -292,18 +297,29 @@ export class WalletsService {
       throw new InternalServerErrorException(
         'Erro ao estornar créditos: ' + error.message,
       );
-    } finally {
-      await queryRunner.release();
     }
   }
 
   /**
    * Lista transações da carteira com filtros e paginação
    */
-  async getTransactions(userId: string, query: QueryTransactionsDto) {
-    const { page = 1, limit = 10, type, startDate, endDate } = query;
+  async listTransactions(
+    userId: string,
+    query: QueryTransactionsDto,
+  ): Promise<{
+    data: WalletTransaction[];
+    meta: { total: number; page: number; limit: number; totalPages: number };
+  }> {
+    const {
+      page = 1,
+      limit = 10,
+      type,
+      status,
+      startDate,
+      endDate,
+    } = query;
 
-    const wallet = await this.walletRepository.findOne({
+    const wallet = await this.walletModel.findOne({
       where: { userId },
     });
 
@@ -311,88 +327,46 @@ export class WalletsService {
       throw new NotFoundException('Carteira não encontrada');
     }
 
-    const queryBuilder = this.transactionRepository
-      .createQueryBuilder('transaction')
-      .where('transaction.walletId = :walletId', { walletId: wallet.id });
+    const where: any = { walletId: wallet.id };
 
-    // Filtro por tipo
     if (type) {
-      queryBuilder.andWhere('transaction.type = :type', { type });
+      where.type = type;
     }
 
-    // Filtro por data
-    if (startDate && endDate) {
-      queryBuilder.andWhere('transaction.createdAt BETWEEN :startDate AND :endDate', {
-        startDate,
-        endDate,
-      });
-    } else if (startDate) {
-      queryBuilder.andWhere('transaction.createdAt >= :startDate', {
-        startDate,
-      });
-    } else if (endDate) {
-      queryBuilder.andWhere('transaction.createdAt <= :endDate', { endDate });
+    if (status) {
+      where.status = status;
     }
 
-    // Ordenação e paginação
-    queryBuilder
-      .orderBy('transaction.createdAt', 'DESC')
-      .skip((page - 1) * limit)
-      .take(limit);
+    if (startDate || endDate) {
+      where.createdAt = {};
 
-    const [transactions, total] = await queryBuilder.getManyAndCount();
+      if (startDate) {
+        where.createdAt[Op.gte] = new Date(startDate);
+      }
+
+      if (endDate) {
+        where.createdAt[Op.lte] = new Date(endDate);
+      }
+    }
+
+    const skip = (page - 1) * limit;
+
+    const { count, rows: transactions } =
+      await this.transactionModel.findAndCountAll({
+        where,
+        order: [['createdAt', 'DESC']],
+        offset: skip,
+        limit,
+      });
 
     return {
       data: transactions,
       meta: {
-        total,
+        total: count,
         page,
         limit,
-        totalPages: Math.ceil(total / limit),
+        totalPages: Math.ceil(count / limit),
       },
     };
-  }
-
-  /**
-   * Regra de Negócio #17: Bônus de boas-vindas
-   * Adiciona créditos de bônus para novos usuários
-   */
-  async addWelcomeBonus(userId: string): Promise<WalletTransaction> {
-    const WELCOME_BONUS = 10.0; // R$ 10,00 de bônus
-
-    return await this.addCredits(userId, {
-      amount: WELCOME_BONUS,
-      description: 'Bônus de boas-vindas',
-    });
-  }
-
-  /**
-   * Regra de Negócio #18: Cashback em compras
-   * Adiciona cashback de 5% do valor da compra
-   */
-  async addCashback(
-    userId: string,
-    orderValue: number,
-    orderId: string,
-  ): Promise<WalletTransaction> {
-    const CASHBACK_PERCENTAGE = 0.05; // 5%
-    const cashbackAmount = orderValue * CASHBACK_PERCENTAGE;
-
-    return await this.addCredits(userId, {
-      amount: cashbackAmount,
-      description: `Cashback de 5% do pedido #${orderId}`,
-    });
-  }
-
-  async findByUserId(userId: string): Promise<UserWallet> {
-    return this.getBalance(userId);
-  }
-
-  async addBalance(userId: string, amount: number, description: string): Promise<WalletTransaction> {
-    return this.addCredits(userId, { amount, description });
-  }
-
-  async deductBalance(userId: string, amount: number, description: string): Promise<WalletTransaction> {
-    return this.useCredits(userId, { amount, description });
   }
 }

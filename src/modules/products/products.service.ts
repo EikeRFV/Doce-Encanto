@@ -4,11 +4,12 @@ import {
   BadRequestException,
   ConflictException,
 } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, Like, Between, In } from 'typeorm';
-import { Product } from './entities/product.entity';
-import { ProductImage } from './entities/product-image.entity';
-import { ProductStockHistory, StockMovementType } from './entities/product-stock-history.entity';
+import { InjectModel } from '@nestjs/sequelize';
+import { Op } from 'sequelize';
+import { Product } from './models/product.model';
+import { ProductImage } from './models/product-image.model';
+import { ProductStockHistory, StockMovementType } from './models/product-stock-history.model';
+import { Category } from '../categories/models/category.model';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
 import { QueryProductsDto } from './dto/query-products.dto';
@@ -16,12 +17,12 @@ import { QueryProductsDto } from './dto/query-products.dto';
 @Injectable()
 export class ProductsService {
   constructor(
-    @InjectRepository(Product)
-    private readonly productRepository: Repository<Product>,
-    @InjectRepository(ProductStockHistory)
-    private readonly stockHistoryRepository: Repository<ProductStockHistory>,
-    @InjectRepository(ProductImage)
-    private readonly productImageRepository: Repository<ProductImage>,
+    @InjectModel(Product)
+    private readonly productModel: typeof Product,
+    @InjectModel(ProductStockHistory)
+    private readonly stockHistoryModel: typeof ProductStockHistory,
+    @InjectModel(ProductImage)
+    private readonly productImageModel: typeof ProductImage,
   ) {}
 
   /**
@@ -47,14 +48,12 @@ export class ProductsService {
     let counter = 1;
 
     while (true) {
-      const query = this.productRepository.createQueryBuilder('product')
-        .where('product.slug = :slug', { slug });
-
+      const where: any = { slug };
       if (excludeId) {
-        query.andWhere('product.id != :excludeId', { excludeId });
+        where.id = { [Op.ne]: excludeId };
       }
 
-      const existing = await query.getOne();
+      const existing = await this.productModel.findOne({ where });
 
       if (!existing) {
         return slug;
@@ -83,14 +82,12 @@ export class ProductsService {
     const baseSlug = this.generateSlug(createProductDto.name);
     const slug = await this.ensureUniqueSlug(baseSlug);
 
-    const product = this.productRepository.create({
+    const savedProduct = await this.productModel.create({
       ...createProductDto,
       slug,
       averageRating: 0,
       reviewCount: 0,
     });
-
-    const savedProduct = await this.productRepository.save(product);
 
     // Registrar histórico de estoque inicial
     if (createProductDto.stockQuantity > 0) {
@@ -124,57 +121,63 @@ export class ProductsService {
       sortOrder = 'DESC',
     } = query;
 
-    const queryBuilder = this.productRepository
-      .createQueryBuilder('product')
-      .leftJoinAndSelect('product.category', 'category')
-      .leftJoinAndSelect('product.images', 'images');
+    const where: any = {};
 
     // Filtro de busca
     if (search) {
-      queryBuilder.andWhere(
-        '(product.name ILIKE :search OR product.description ILIKE :search)',
-        { search: `%${search}%` },
-      );
+      where[Op.or] = [
+        { name: { [Op.iLike]: `%${search}%` } },
+        { description: { [Op.iLike]: `%${search}%` } },
+      ];
     }
 
     // Filtro por categoria
     if (categoryId) {
-      queryBuilder.andWhere('product.categoryId = :categoryId', { categoryId });
+      where.categoryId = categoryId;
     }
 
     // Filtro por ativo
     if (isActive !== undefined) {
-      queryBuilder.andWhere('product.isActive = :isActive', { isActive });
+      where.isActive = isActive;
     }
 
     // Filtro por destaque
     if (isFeatured !== undefined) {
-      queryBuilder.andWhere('product.isFeatured = :isFeatured', { isFeatured });
+      where.isFeatured = isFeatured;
     }
 
     // Filtro por faixa de preço
     if (minPrice !== undefined) {
-      queryBuilder.andWhere('product.price >= :minPrice', { minPrice });
+      where.price = { [Op.gte]: minPrice };
     }
     if (maxPrice !== undefined) {
-      queryBuilder.andWhere('product.price <= :maxPrice', { maxPrice });
+      if (!where.price) where.price = {};
+      where.price[Op.lte] = maxPrice;
     }
 
-    // Ordenação
-    queryBuilder.orderBy(`product.${sortBy}`, sortOrder);
+    const validSortFields = ['name', 'price', 'createdAt', 'updatedAt', 'averageRating'];
+    const sortField = validSortFields.includes(sortBy) ? sortBy : 'createdAt';
+    const order: any = [[sortField, sortOrder]];
 
-    // Paginação
-    queryBuilder.skip((page - 1) * limit).take(limit);
-
-    const [products, total] = await queryBuilder.getManyAndCount();
+    const skip = (page - 1) * limit;
+    const { count, rows: products } = await this.productModel.findAndCountAll({
+      where,
+      order,
+      offset: skip,
+      limit,
+      include: [
+        { model: Category, as: 'category' },
+        { model: ProductImage, as: 'images' },
+      ],
+    });
 
     return {
       data: products,
       meta: {
-        total,
+        total: count,
         page,
         limit,
-        totalPages: Math.ceil(total / limit),
+        totalPages: Math.ceil(count / limit),
       },
     };
   }
@@ -183,9 +186,12 @@ export class ProductsService {
    * Buscar produto por ID
    */
   async findOne(id: string): Promise<Product> {
-    const product = await this.productRepository.findOne({
+    const product = await this.productModel.findOne({
       where: { id },
-      relations: ['category', 'images', 'reviews'],
+      include: [
+        { model: Category, as: 'category' },
+        { model: ProductImage, as: 'images' },
+      ],
     });
 
     if (!product) {
@@ -199,9 +205,12 @@ export class ProductsService {
    * Buscar produto por slug
    */
   async findBySlug(slug: string): Promise<Product> {
-    const product = await this.productRepository.findOne({
+    const product = await this.productModel.findOne({
       where: { slug },
-      relations: ['category', 'images', 'reviews'],
+      include: [
+        { model: Category, as: 'category' },
+        { model: ProductImage, as: 'images' },
+      ],
     });
 
     if (!product) {
@@ -245,8 +254,15 @@ export class ProductsService {
       });
     }
 
-    Object.assign(product, updateProductDto);
-    return await this.productRepository.save(product);
+    await product.update(updateProductDto);
+
+    return await this.productModel.findOne({
+      where: { id },
+      include: [
+        { model: Category, as: 'category' },
+        { model: ProductImage, as: 'images' },
+      ],
+    });
   }
 
   /**
@@ -254,22 +270,23 @@ export class ProductsService {
    * Produtos com pedidos não podem ser deletados, apenas desativados
    */
   async remove(id: string): Promise<void> {
-    const product = await this.productRepository.findOne({
+    const product = await this.productModel.findOne({
       where: { id },
-      relations: ['orderItems'],
     });
 
     if (!product) {
       throw new NotFoundException('Produto não encontrado');
     }
 
-    if (product.orderItems && product.orderItems.length > 0) {
+    // Check if product has order items
+    const orderItemCount = await product.$count('orderItems');
+    if (orderItemCount > 0) {
       throw new ConflictException(
         'Produto não pode ser deletado pois possui pedidos associados. Desative o produto ao invés de deletá-lo.',
       );
     }
 
-    await this.productRepository.remove(product);
+    await product.destroy();
   }
 
   /**
@@ -277,8 +294,15 @@ export class ProductsService {
    */
   async deactivate(id: string): Promise<Product> {
     const product = await this.findOne(id);
-    product.isActive = false;
-    return await this.productRepository.save(product);
+    await product.update({ isActive: false });
+    
+    return await this.productModel.findOne({
+      where: { id },
+      include: [
+        { model: Category, as: 'category' },
+        { model: ProductImage, as: 'images' },
+      ],
+    });
   }
 
   /**
@@ -286,10 +310,20 @@ export class ProductsService {
    */
   async activate(id: string): Promise<Product> {
     const product = await this.findOne(id);
-    product.isActive = true;
-    return await this.productRepository.save(product);
+    await product.update({ isActive: true });
+    
+    return await this.productModel.findOne({
+      where: { id },
+      include: [
+        { model: Category, as: 'category' },
+        { model: ProductImage, as: 'images' },
+      ],
+    });
   }
 
+  /**
+   * Atualizar estoque
+   */
   /**
    * Atualizar estoque
    */
@@ -326,8 +360,7 @@ export class ProductsService {
       throw new BadRequestException('Estoque insuficiente');
     }
 
-    product.stockQuantity = newStock;
-    await this.productRepository.save(product);
+    await product.update({ stockQuantity: newStock });
 
     await this.createStockHistory({
       productId: id,
@@ -340,7 +373,13 @@ export class ProductsService {
       orderId,
     });
 
-    return product;
+    return await this.productModel.findOne({
+      where: { id },
+      include: [
+        { model: Category, as: 'category' },
+        { model: ProductImage, as: 'images' },
+      ],
+    });
   }
 
   /**
@@ -356,29 +395,27 @@ export class ProductsService {
     userId?: string;
     orderId?: string;
   }): Promise<ProductStockHistory> {
-    const history = this.stockHistoryRepository.create(data);
-    return await this.stockHistoryRepository.save(history);
+    return await this.stockHistoryModel.create(data);
   }
 
   /**
    * Buscar histórico de estoque
    */
   async getStockHistory(productId: string, page = 1, limit = 10) {
-    const [history, total] = await this.stockHistoryRepository.findAndCount({
+    const { count, rows: history } = await this.stockHistoryModel.findAndCountAll({
       where: { productId },
-      order: { createdAt: 'DESC' },
-      skip: (page - 1) * limit,
-      take: limit,
-      relations: ['user'],
+      order: [['createdAt', 'DESC']],
+      offset: (page - 1) * limit,
+      limit,
     });
 
     return {
       data: history,
       meta: {
-        total,
+        total: count,
         page,
         limit,
-        totalPages: Math.ceil(total / limit),
+        totalPages: Math.ceil(count / limit),
       },
     };
   }
@@ -387,11 +424,14 @@ export class ProductsService {
    * Produtos em destaque
    */
   async getFeatured(limit = 10): Promise<Product[]> {
-    return await this.productRepository.find({
+    return await this.productModel.findAll({
       where: { isFeatured: true, isActive: true },
-      relations: ['category', 'images'],
-      take: limit,
-      order: { createdAt: 'DESC' },
+      include: [
+        { model: Category, as: 'category' },
+        { model: ProductImage, as: 'images' },
+      ],
+      limit,
+      order: [['createdAt', 'DESC']],
     });
   }
 
@@ -399,18 +439,16 @@ export class ProductsService {
    * Produtos mais vendidos
    */
   async getBestSellers(limit = 10): Promise<Product[]> {
-    return await this.productRepository
-      .createQueryBuilder('product')
-      .leftJoinAndSelect('product.category', 'category')
-      .leftJoinAndSelect('product.images', 'images')
-      .leftJoin('product.orderItems', 'orderItems')
-      .where('product.isActive = :isActive', { isActive: true })
-      .groupBy('product.id')
-      .addGroupBy('category.id')
-      .addGroupBy('images.id')
-      .orderBy('COUNT(orderItems.id)', 'DESC')
-      .take(limit)
-      .getMany();
+    return await this.productModel.findAll({
+      where: { isActive: true },
+      include: [
+        { model: Category, as: 'category' },
+        { model: ProductImage, as: 'images' },
+      ],
+      limit,
+      order: [['orderItems', 'DESC']],
+      subQuery: false,
+    });
   }
 
   /**
@@ -419,14 +457,17 @@ export class ProductsService {
   async getRelated(productId: string, limit = 4): Promise<Product[]> {
     const product = await this.findOne(productId);
 
-    return await this.productRepository.find({
+    return await this.productModel.findAll({
       where: {
         categoryId: product.categoryId,
         isActive: true,
       },
-      relations: ['category', 'images'],
-      take: limit,
-      order: { averageRating: 'DESC' },
+      include: [
+        { model: Category, as: 'category' },
+        { model: ProductImage, as: 'images' },
+      ],
+      limit,
+      order: [['averageRating', 'DESC']],
     });
   }
 
@@ -443,15 +484,14 @@ export class ProductsService {
     const images: ProductImage[] = [];
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
-      const image = this.productImageRepository.create({
+      const image = await this.productImageModel.create({
         productId: product.id,
         url: `/uploads/products/${file.filename}`,
-        isPrimary: isPrimary && i === 0, // Apenas a primeira é primary se solicitado
+        isPrimary: isPrimary && i === 0,
         order: i + 1,
         altText: file.originalname,
       });
-      const savedImage = await this.productImageRepository.save(image);
-      images.push(savedImage);
+      images.push(image);
     }
 
     return images;
@@ -461,7 +501,7 @@ export class ProductsService {
    * Deletar imagem do produto
    */
   async deleteImage(productId: string, imageId: string): Promise<void> {
-    const image = await this.productImageRepository.findOne({
+    const image = await this.productImageModel.findOne({
       where: { id: imageId, productId },
     });
 
@@ -469,7 +509,7 @@ export class ProductsService {
       throw new NotFoundException('Imagem não encontrada');
     }
 
-    await this.productImageRepository.remove(image);
+    await image.destroy();
   }
 
   /**
@@ -479,13 +519,13 @@ export class ProductsService {
     const product = await this.findOne(productId);
 
     // Remove primary de todas as imagens
-    await this.productImageRepository.update(
-      { productId },
+    await this.productImageModel.update(
       { isPrimary: false },
+      { where: { productId } },
     );
 
     // Define a nova imagem como primary
-    const image = await this.productImageRepository.findOne({
+    const image = await this.productImageModel.findOne({
       where: { id: imageId, productId },
     });
 
@@ -493,8 +533,8 @@ export class ProductsService {
       throw new NotFoundException('Imagem não encontrada');
     }
 
-    image.isPrimary = true;
-    return await this.productImageRepository.save(image);
+    await image.update({ isPrimary: true });
+    return image;
   }
 }
 

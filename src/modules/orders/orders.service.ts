@@ -1,33 +1,33 @@
 import { Injectable, NotFoundException, BadRequestException, Inject } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, Between, MoreThanOrEqual, LessThanOrEqual } from 'typeorm';
+import { InjectModel } from '@nestjs/sequelize';
+import { Op } from 'sequelize';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import type { Cache } from 'cache-manager';
-import { Order } from './entities/order.entity';
-import { OrderItem } from './entities/order-item.entity';
+import { Order } from './models/order.model';
+import { OrderItem } from './models/order-item.model';
 import { CreateOrderDto, PaymentMethodType } from './dto/create-order.dto';
 import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
 import { QueryOrdersDto } from './dto/query-orders.dto';
 import { OrderStatus } from '../../common/enums/order-status.enum';
 import { PaymentMethod } from '../../common/enums/payment-method.enum';
-import { Product } from '../products/entities/product.entity';
-import { Address } from '../addresses/entities/address.entity';
-import { Voucher } from '../vouchers/entities/voucher.entity';
+import { Product } from '../products/models/product.model';
+import { Address } from '../addresses/models/address.model';
+import { Voucher } from '../vouchers/models/voucher.model';
 import { WalletsService } from '../wallets/wallets.service';
 
 @Injectable()
 export class OrdersService {
   constructor(
-    @InjectRepository(Order)
-    private readonly orderRepository: Repository<Order>,
-    @InjectRepository(OrderItem)
-    private readonly orderItemRepository: Repository<OrderItem>,
-    @InjectRepository(Product)
-    private readonly productRepository: Repository<Product>,
-    @InjectRepository(Address)
-    private readonly addressRepository: Repository<Address>,
-    @InjectRepository(Voucher)
-    private readonly voucherRepository: Repository<Voucher>,
+    @InjectModel(Order)
+    private readonly orderModel: typeof Order,
+    @InjectModel(OrderItem)
+    private readonly orderItemModel: typeof OrderItem,
+    @InjectModel(Product)
+    private readonly productModel: typeof Product,
+    @InjectModel(Address)
+    private readonly addressModel: typeof Address,
+    @InjectModel(Voucher)
+    private readonly voucherModel: typeof Voucher,
     private readonly walletsService: WalletsService,
     @Inject(CACHE_MANAGER)
     private cacheManager: Cache,
@@ -36,7 +36,7 @@ export class OrdersService {
   async create(userId: string, createOrderDto: CreateOrderDto): Promise<Order> {
     const { items, addressId, paymentMethod, voucherCode, notes } = createOrderDto;
 
-    const address = await this.addressRepository.findOne({
+    const address = await this.addressModel.findOne({
       where: { id: addressId, userId },
     });
 

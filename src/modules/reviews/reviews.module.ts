@@ -1,13 +1,13 @@
 import { Module } from '@nestjs/common';
-import { TypeOrmModule } from '@nestjs/typeorm';
+import { SequelizeModule } from '@nestjs/sequelize';
 import { ReviewsService } from './reviews.service';
 import { ReviewsController } from './reviews.controller';
-import { Review } from './entities/review.entity';
-import { Product } from '../products/entities/product.entity';
-import { Order } from '../orders/entities/order.entity';
+import { Review } from './models/review.model';
+import { Product } from '../products/models/product.model';
+import { Order } from '../orders/models/order.model';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Review, Product, Order])],
+  imports: [SequelizeModule.forFeature([Review, Product, Order])],
   controllers: [ReviewsController],
   providers: [ReviewsService],
   exports: [ReviewsService],

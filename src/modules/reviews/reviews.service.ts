@@ -1,9 +1,10 @@
 import { Injectable, NotFoundException, BadRequestException, ForbiddenException } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
-import { Review } from './entities/review.entity';
-import { Product } from '../products/entities/product.entity';
-import { Order } from '../orders/entities/order.entity';
+import { InjectModel } from '@nestjs/sequelize';
+import { Op } from 'sequelize';
+import { Review } from './models/review.model';
+import { Product } from '../products/models/product.model';
+import { Order } from '../orders/models/order.model';
+import { User } from '../users/models/user.model';
 import { CreateReviewDto } from './dto/create-review.dto';
 import { UpdateReviewDto } from './dto/update-review.dto';
 import { QueryReviewsDto } from './dto/query-reviews.dto';
@@ -12,18 +13,18 @@ import { OrderStatus } from '../../common/enums/order-status.enum';
 @Injectable()
 export class ReviewsService {
   constructor(
-    @InjectRepository(Review)
-    private readonly reviewRepository: Repository<Review>,
-    @InjectRepository(Product)
-    private readonly productRepository: Repository<Product>,
-    @InjectRepository(Order)
-    private readonly orderRepository: Repository<Order>,
+    @InjectModel(Review)
+    private readonly reviewModel: typeof Review,
+    @InjectModel(Product)
+    private readonly productModel: typeof Product,
+    @InjectModel(Order)
+    private readonly orderModel: typeof Order,
   ) {}
 
   async create(userId: string, createReviewDto: CreateReviewDto): Promise<Review> {
     const { productId, rating, comment } = createReviewDto;
 
-    const product = await this.productRepository.findOne({
+    const product = await this.productModel.findOne({
       where: { id: productId },
     });
 
@@ -31,7 +32,7 @@ export class ReviewsService {
       throw new NotFoundException('Produto não encontrado');
     }
 
-    const existingReview = await this.reviewRepository.findOne({
+    const existingReview = await this.reviewModel.findOne({
       where: { userId, productId },
     });
 
@@ -39,72 +40,82 @@ export class ReviewsService {
       throw new BadRequestException('Você já avaliou este produto');
     }
 
-    const hasPurchased = await this.orderRepository
-      .createQueryBuilder('order')
-      .innerJoin('order.items', 'item')
-      .where('order.userId = :userId', { userId })
-      .andWhere('item.productId = :productId', { productId })
-      .andWhere('order.status = :status', { status: OrderStatus.DELIVERED })
-      .getOne();
+    const hasPurchased = await this.orderModel.findOne({
+      where: {
+        userId,
+        status: OrderStatus.DELIVERED,
+      },
+      include: [
+        {
+          model: Order,
+          as: 'items',
+          where: { productId },
+          required: true,
+        },
+      ],
+    });
 
     if (!hasPurchased) {
       throw new BadRequestException('Você precisa comprar o produto antes de avaliá-lo');
     }
 
-    const review = this.reviewRepository.create({
+    const review = await this.reviewModel.create({
       userId,
       productId,
       rating,
       comment,
     });
 
-    const savedReview = await this.reviewRepository.save(review);
-
     await this.updateProductRating(productId);
 
-    return savedReview;
+    return review;
   }
 
   async findAll(query: QueryReviewsDto) {
     const { page = 1, limit = 10, productId, rating, sortBy = 'createdAt', sortOrder = 'DESC' } = query;
 
-    const queryBuilder = this.reviewRepository
-      .createQueryBuilder('review')
-      .leftJoinAndSelect('review.user', 'user')
-      .leftJoinAndSelect('review.product', 'product');
-
+    const where: any = {};
     if (productId) {
-      queryBuilder.andWhere('review.productId = :productId', { productId });
+      where.productId = productId;
     }
-
     if (rating) {
-      queryBuilder.andWhere('review.rating = :rating', { rating });
+      where.rating = rating;
     }
 
     const validSortFields = ['createdAt', 'rating'];
     const sortField = validSortFields.includes(sortBy) ? sortBy : 'createdAt';
-    queryBuilder.orderBy(`review.${sortField}`, sortOrder);
+    const order: any = [[sortField, sortOrder]];
 
     const skip = (page - 1) * limit;
-    queryBuilder.skip(skip).take(limit);
-
-    const [reviews, total] = await queryBuilder.getManyAndCount();
+    const { count, rows: reviews } = await this.reviewModel.findAndCountAll({
+      where,
+      order,
+      offset: skip,
+      limit,
+      include: [
+        { model: User, as: 'user', attributes: ['id', 'name', 'email'] },
+        { model: Product, as: 'product' },
+      ],
+    });
 
     return {
       data: reviews,
       meta: {
-        total,
+        total: count,
         page,
         limit,
-        totalPages: Math.ceil(total / limit),
+        totalPages: Math.ceil(count / limit),
       },
     };
   }
 
   async findOne(id: string): Promise<Review> {
-    const review = await this.reviewRepository.findOne({
+    const review = await this.reviewModel.findOne({
       where: { id },
-      relations: ['user', 'product'],
+      include: [
+        { model: User, as: 'user', attributes: ['id', 'name', 'email'] },
+        { model: Product, as: 'product' },
+      ],
     });
 
     if (!review) {
@@ -121,33 +132,32 @@ export class ReviewsService {
   async findMyReviews(userId: string, query: QueryReviewsDto) {
     const { page = 1, limit = 10, sortBy = 'createdAt', sortOrder = 'DESC' } = query;
 
-    const queryBuilder = this.reviewRepository
-      .createQueryBuilder('review')
-      .leftJoinAndSelect('review.product', 'product')
-      .where('review.userId = :userId', { userId });
-
     const validSortFields = ['createdAt', 'rating'];
     const sortField = validSortFields.includes(sortBy) ? sortBy : 'createdAt';
-    queryBuilder.orderBy(`review.${sortField}`, sortOrder);
+    const order: any = [[sortField, sortOrder]];
 
     const skip = (page - 1) * limit;
-    queryBuilder.skip(skip).take(limit);
-
-    const [reviews, total] = await queryBuilder.getManyAndCount();
+    const { count, rows: reviews } = await this.reviewModel.findAndCountAll({
+      where: { userId },
+      order,
+      offset: skip,
+      limit,
+      include: [{ model: Product, as: 'product' }],
+    });
 
     return {
       data: reviews,
       meta: {
-        total,
+        total: count,
         page,
         limit,
-        totalPages: Math.ceil(total / limit),
+        totalPages: Math.ceil(count / limit),
       },
     };
   }
 
   async update(id: string, userId: string, updateReviewDto: UpdateReviewDto): Promise<Review> {
-    const review = await this.reviewRepository.findOne({
+    const review = await this.reviewModel.findOne({
       where: { id },
     });
 
@@ -159,19 +169,23 @@ export class ReviewsService {
       throw new ForbiddenException('Você não tem permissão para editar esta avaliação');
     }
 
-    Object.assign(review, updateReviewDto);
-
-    const updatedReview = await this.reviewRepository.save(review);
+    await review.update(updateReviewDto);
 
     if (updateReviewDto.rating) {
       await this.updateProductRating(review.productId);
     }
 
-    return updatedReview;
+    return await this.reviewModel.findOne({
+      where: { id },
+      include: [
+        { model: User, as: 'user', attributes: ['id', 'name', 'email'] },
+        { model: Product, as: 'product' },
+      ],
+    });
   }
 
   async remove(id: string, userId: string): Promise<void> {
-    const review = await this.reviewRepository.findOne({
+    const review = await this.reviewModel.findOne({
       where: { id },
     });
 
@@ -185,13 +199,13 @@ export class ReviewsService {
 
     const productId = review.productId;
 
-    await this.reviewRepository.remove(review);
+    await review.destroy();
 
     await this.updateProductRating(productId);
   }
 
   async getProductStats(productId: string) {
-    const reviews = await this.reviewRepository.find({
+    const reviews = await this.reviewModel.findAll({
       where: { productId },
     });
 
@@ -230,10 +244,10 @@ export class ReviewsService {
   private async updateProductRating(productId: string): Promise<void> {
     const stats = await this.getProductStats(productId);
 
-    await this.productRepository.update(productId, {
-      averageRating: stats.averageRating,
-      reviewCount: stats.totalReviews,
-    });
+    await this.productModel.update(
+      { averageRating: stats.averageRating, reviewCount: stats.totalReviews },
+      { where: { id: productId } },
+    );
   }
 }
 

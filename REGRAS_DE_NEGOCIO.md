@@ -3,7 +3,7 @@
 **Projeto:** Sistema de E-commerce para Velas Artesanais e Sabonetes Personalizados  
 **Disciplina:** Desenvolvimento de APIs  
 **Data:** Abril de 2026  
-**Repositório:** https://github.com/[seu-usuario]/Doce-Encanto
+**Repositório:** https://github.com/EikeRFV/Doce-Encanto
 
 ---
 

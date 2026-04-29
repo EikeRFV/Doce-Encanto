@@ -1,17 +1,17 @@
 import { Module } from '@nestjs/common';
-import { TypeOrmModule } from '@nestjs/typeorm';
+import { SequelizeModule } from '@nestjs/sequelize';
 import { OrdersService } from './orders.service';
 import { OrdersController } from './orders.controller';
-import { Order } from './entities/order.entity';
-import { OrderItem } from './entities/order-item.entity';
-import { Product } from '../products/entities/product.entity';
-import { Address } from '../addresses/entities/address.entity';
-import { Voucher } from '../vouchers/entities/voucher.entity';
+import { Order } from './models/order.model';
+import { OrderItem } from './models/order-item.model';
+import { Product } from '../products/models/product.model';
+import { Address } from '../addresses/models/address.model';
+import { Voucher } from '../vouchers/models/voucher.model';
 import { WalletsModule } from '../wallets/wallets.module';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Order, OrderItem, Product, Address, Voucher]),
+    SequelizeModule.forFeature([Order, OrderItem, Product, Address, Voucher]),
     WalletsModule,
   ],
   controllers: [OrdersController],

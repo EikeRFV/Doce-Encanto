@@ -1,12 +1,12 @@
 import { Module } from '@nestjs/common';
-import { TypeOrmModule } from '@nestjs/typeorm';
+import { SequelizeModule } from '@nestjs/sequelize';
 import { WalletsService } from './wallets.service';
 import { WalletsController } from './wallets.controller';
-import { UserWallet } from './entities/user-wallet.entity';
-import { WalletTransaction } from './entities/wallet-transaction.entity';
+import { UserWallet } from './models/user-wallet.model';
+import { WalletTransaction } from './models/wallet-transaction.model';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([UserWallet, WalletTransaction])],
+  imports: [SequelizeModule.forFeature([UserWallet, WalletTransaction])],
   controllers: [WalletsController],
   providers: [WalletsService],
   exports: [WalletsService],

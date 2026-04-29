@@ -1,7 +1,8 @@
 import { Injectable, NotFoundException, ConflictException, BadRequestException } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, Like, ILike } from 'typeorm';
-import { Category } from './entities/category.entity';
+import { InjectModel } from '@nestjs/sequelize';
+import { Op } from 'sequelize';
+import { Category } from './models/category.model';
+import { Product } from '../products/models/product.model';
 import { CreateCategoryDto } from './dto/create-category.dto';
 import { UpdateCategoryDto } from './dto/update-category.dto';
 import { QueryCategoriesDto } from './dto/query-categories.dto';
@@ -9,14 +10,14 @@ import { QueryCategoriesDto } from './dto/query-categories.dto';
 @Injectable()
 export class CategoriesService {
   constructor(
-    @InjectRepository(Category)
-    private readonly categoryRepository: Repository<Category>,
+    @InjectModel(Category)
+    private readonly categoryModel: typeof Category,
   ) {}
 
   async create(createCategoryDto: CreateCategoryDto): Promise<Category> {
     const slug = this.generateSlug(createCategoryDto.name);
     
-    const existingCategory = await this.categoryRepository.findOne({
+    const existingCategory = await this.categoryModel.findOne({
       where: { slug },
     });
 
@@ -24,55 +25,56 @@ export class CategoriesService {
       throw new ConflictException('Já existe uma categoria com este nome');
     }
 
-    const category = this.categoryRepository.create({
+    return await this.categoryModel.create({
       ...createCategoryDto,
       slug,
     });
-
-    return await this.categoryRepository.save(category);
   }
 
   async findAll(query: QueryCategoriesDto) {
     const { page = 1, limit = 10, name, slug, isActive, sortBy = 'name', sortOrder = 'ASC' } = query;
     
-    const queryBuilder = this.categoryRepository.createQueryBuilder('category');
+    const where: any = {};
 
     if (name) {
-      queryBuilder.andWhere('category.name ILIKE :name', { name: `%${name}%` });
+      where.name = { [Op.iLike]: `%${name}%` };
     }
 
     if (slug) {
-      queryBuilder.andWhere('category.slug ILIKE :slug', { slug: `%${slug}%` });
+      where.slug = { [Op.iLike]: `%${slug}%` };
     }
 
     if (isActive !== undefined) {
-      queryBuilder.andWhere('category.isActive = :isActive', { isActive });
+      where.isActive = isActive;
     }
 
     const validSortFields = ['name', 'createdAt', 'updatedAt'];
     const sortField = validSortFields.includes(sortBy) ? sortBy : 'name';
-    queryBuilder.orderBy(`category.${sortField}`, sortOrder);
+    const order: any = [[sortField, sortOrder]];
 
     const skip = (page - 1) * limit;
-    queryBuilder.skip(skip).take(limit);
-
-    const [categories, total] = await queryBuilder.getManyAndCount();
+    const { count, rows: categories } = await this.categoryModel.findAndCountAll({
+      where,
+      order,
+      offset: skip,
+      limit,
+    });
 
     return {
       data: categories,
       meta: {
-        total,
+        total: count,
         page,
         limit,
-        totalPages: Math.ceil(total / limit),
+        totalPages: Math.ceil(count / limit),
       },
     };
   }
 
   async findOne(id: string): Promise<Category> {
-    const category = await this.categoryRepository.findOne({
+    const category = await this.categoryModel.findOne({
       where: { id },
-      relations: ['products'],
+      include: [{ model: Product, as: 'products' }],
     });
 
     if (!category) {
@@ -83,9 +85,9 @@ export class CategoriesService {
   }
 
   async findBySlug(slug: string): Promise<Category> {
-    const category = await this.categoryRepository.findOne({
+    const category = await this.categoryModel.findOne({
       where: { slug },
-      relations: ['products'],
+      include: [{ model: Product, as: 'products' }],
     });
 
     if (!category) {
@@ -101,7 +103,7 @@ export class CategoriesService {
     if (updateCategoryDto.name && updateCategoryDto.name !== category.name) {
       const newSlug = this.generateSlug(updateCategoryDto.name);
       
-      const existingCategory = await this.categoryRepository.findOne({
+      const existingCategory = await this.categoryModel.findOne({
         where: { slug: newSlug },
       });
 
@@ -112,15 +114,18 @@ export class CategoriesService {
       category.slug = newSlug;
     }
 
-    Object.assign(category, updateCategoryDto);
+    await category.update(updateCategoryDto);
 
-    return await this.categoryRepository.save(category);
+    return await this.categoryModel.findOne({
+      where: { id },
+      include: [{ model: Product, as: 'products' }],
+    });
   }
 
   async remove(id: string): Promise<void> {
-    const category = await this.categoryRepository.findOne({
+    const category = await this.categoryModel.findOne({
       where: { id },
-      relations: ['products'],
+      include: [{ model: Product, as: 'products' }],
     });
 
     if (!category) {
@@ -133,32 +138,40 @@ export class CategoriesService {
       );
     }
 
-    await this.categoryRepository.remove(category);
+    await category.destroy();
   }
 
   async toggleActive(id: string): Promise<Category> {
     const category = await this.findOne(id);
     category.isActive = !category.isActive;
-    return await this.categoryRepository.save(category);
+    await category.save();
+    
+    return await this.categoryModel.findOne({
+      where: { id },
+      include: [{ model: Product, as: 'products' }],
+    });
   }
 
   async getActiveCategories(): Promise<Category[]> {
-    return await this.categoryRepository.find({
+    return await this.categoryModel.findAll({
       where: { isActive: true },
-      order: { name: 'ASC' },
+      order: [['name', 'ASC']],
     });
   }
 
   async getCategoriesWithProductCount() {
-    const categories = await this.categoryRepository
-      .createQueryBuilder('category')
-      .leftJoinAndSelect('category.products', 'product')
-      .loadRelationCountAndMap('category.productCount', 'category.products')
-      .where('category.isActive = :isActive', { isActive: true })
-      .orderBy('category.name', 'ASC')
-      .getMany();
+    const categories = await this.categoryModel.findAll({
+      where: { isActive: true },
+      include: [{ model: Product, as: 'products', attributes: [] }],
+      order: [['name', 'ASC']],
+      raw: true,
+      subQuery: false,
+    });
 
-    return categories;
+    return categories.map((cat: any) => ({
+      ...cat,
+      productCount: cat.products?.length || 0,
+    }));
   }
 
   private generateSlug(name: string): string {
